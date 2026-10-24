@@ -30,3 +30,6 @@ collector-data/*
 .DS_Store
 Thumbs.db
 *.swp
+
+# Project guidance (local/personal)
+CLAUDE.md
