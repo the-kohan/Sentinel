@@ -1,0 +1,24 @@
+[Unit]
+Description=Sentinel Host Network Collector — writes host-ss.json for the Sentinel container
+Documentation=file:///mnt/e/kohanastack/sentinel/collectors/host_collector.py
+After=docker.service network-online.target
+Wants=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=kohan
+WorkingDirectory=/mnt/e/kohanastack/sentinel
+ExecStart=/usr/bin/python3 /mnt/e/kohanastack/sentinel/collectors/host_collector.py --output /mnt/e/kohanastack/sentinel/collector-data/host-ss.json
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sentinel-collector
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/mnt/e/kohanastack/sentinel/collector-data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

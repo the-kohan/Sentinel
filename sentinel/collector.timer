@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the Sentinel host network collector every 60s
+Documentation=file:///mnt/e/kohanastack/sentinel/collectors/host_collector.py
+
+[Timer]
+# Match the container monitor's 60s cadence. OnBootSec gets data flowing
+# shortly after boot without waiting for the first OnUnitActiveSec interval.
+OnBootSec=20s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=collector.service
+
+[Install]
+WantedBy=timers.target

@@ -18,7 +18,7 @@ class SentinelDB:
     ):
         # Use Docker DNS names when running in container, fallback to env/localhost
         self.host = host or os.getenv("POSTGRES_HOST", "postgres")
-        self.dbname = dbname or os.getenv("POSTGRES_DB", "Kohan")
+        self.dbname = dbname or os.getenv("POSTGRES_DB", "sentinel")
         self.user = user or os.getenv("POSTGRES_USER", "Kohan")
         self.password = password or os.getenv("POSTGRES_PASSWORD", "")
         self.port = port or int(os.getenv("POSTGRES_PORT", "5432"))
@@ -35,11 +35,12 @@ class SentinelDB:
             )
             self._conn.autocommit = True
             
-            # Set search_path to sentinel_db schema for all queries
+            # Sentinel's tables live in the public schema of this database —
+            # query them unqualified. There is no `sentinel_db` schema.
             with self._conn.cursor() as cur:
-                cur.execute("SET search_path TO sentinel_db, public;")
-            
-            logger.info(f"Connected to Sentinel DB at {self.host}:{self.port}/{self.dbname} (schema: sentinel_db)")
+                cur.execute("SET search_path TO public;")
+
+            logger.info(f"Connected to Sentinel DB at {self.host}:{self.port}/{self.dbname} (schema: public)")
         except Exception as e:
             logger.error(f"DB Connection failed: {e}")
             raise
@@ -86,6 +87,7 @@ class SentinelDB:
 
     def get_expiring_candidates(self, hours: int = 24):
         """Get candidates expiring within N hours for operator review."""
+        hours_int = max(1, min(int(hours), 720))
         query = """
             SELECT pattern, source, reason, added_ts, expiry, added_by
             FROM known_good
@@ -94,7 +96,7 @@ class SentinelDB:
               AND expiry > NOW() AT TIME ZONE 'UTC'
             ORDER BY expiry ASC
         """
-        return self.execute(query, (str(hours),))
+        return self.execute(query, (str(hours_int),))
 
     def expire_candidates(self):
         """Mark all expired candidates as expired (for cleanup/review)."""

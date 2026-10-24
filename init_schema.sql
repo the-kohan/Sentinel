@@ -1,11 +1,6 @@
 -- Sentinel Database Schema Implementation
--- Target: sentinel_db schema within Kohan database
+-- Target: sentinel database
 -- Updated for containerized deployment (no TimescaleDB, vanilla pgvector/pgvector:pg16)
-
--- Create schema if not exists
-CREATE SCHEMA IF NOT EXISTS sentinel_db;
-
-SET search_path TO sentinel_db;
 
 -- Enable pgvector extension for source reputation embeddings
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -30,7 +25,7 @@ CREATE TABLE IF NOT EXISTS events (
 -- 2. Known Good (Allowlist)
 CREATE TABLE IF NOT EXISTS known_good (
     id SERIAL PRIMARY KEY,
-    pattern TEXT UNIQUE NOT NULL, -- e.g., '<LOCAL_DNS_IP>:53', 'container:<SERVICE_NAME>'
+    pattern TEXT UNIQUE NOT NULL, -- e.g., '127.0.0.53:53', 'container:postgres'
     source TEXT,
     reason TEXT,
     added_ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,

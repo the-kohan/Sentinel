@@ -32,96 +32,130 @@ class HostCollector:
                 cmd, shell=True, stderr=subprocess.STDOUT, text=True, timeout=10
             )
             return result
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Command failed: {cmd} - Error: {e.output}")
-            return ""
-        except subprocess.TimeoutExpired:
-            logger.error(f"Command timed out: {cmd}")
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+            if isinstance(e, subprocess.CalledProcessError):
+                logger.error(f"Command failed: {cmd} - Error: {e.output}")
+            else:
+                logger.debug(f"Command unavailable: {cmd} ({type(e).__name__})")
             return ""
 
-    def get_listening_ports(self) -> dict:
-        """Uses 'ss -tulpn' to find listening ports."""
-        output = self._run_cmd("ss -tulpn")
+    def _parse_proc_net(self, path, proto):
+        """Parse /proc/net/tcp or /proc/net/udp for socket entries."""
+        entries = []
+        try:
+            with open(path, "r") as f:
+                for line in f.readlines()[1:]:
+                    parts = line.split()
+                    if len(parts) < 4:
+                        continue
+                    local = parts[1]
+                    peer = parts[2]
+                    state = parts[3]
+                    local_ip_hex, local_port_hex = local.split(":", 1)
+                    peer_ip_hex, peer_port_hex = peer.split(":", 1)
+                    local_port = int(local_port_hex, 16)
+                    peer_port = int(peer_port_hex, 16)
+                    local_ip = self._hex_ip_to_str(local_ip_hex)
+                    peer_ip = self._hex_ip_to_str(peer_ip_hex)
+                    entries.append({
+                        "local_ip": local_ip, "local_port": local_port,
+                        "dst_ip": peer_ip, "dst_port": peer_port,
+                        "proto": proto, "state": state
+                    })
+        except Exception as e:
+            logger.error(f"Failed to parse {path}: {e}")
+        return entries
+
+    def _hex_ip_to_str(self, hex_ip):
+        """Convert /proc/net hex IP to dotted string."""
+        if len(hex_ip) == 8:
+            return ".".join(str(int(hex_ip[i:i+2], 16)) for i in range(0, 8, 2))
+        elif len(hex_ip) == 32:
+            import socket
+            try:
+                return socket.inet_ntop(socket.AF_INET6, bytes.fromhex(hex_ip))
+            except Exception:
+                return "::"
+        return hex_ip
+
+    def _get_listening_from_proc(self):
+        """Get listening ports from /proc/net (state 0A = LISTEN)."""
         ports = {}
-        for line in output.splitlines()[1:]:  # Skip header
-            # Parse: Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process
-            # Example: tcp LISTEN 0 128 127.0.0.1:5432 0.0.0.0:* users:(("postgres",pid=123,fd=4))
-            parts = line.split()
-            if len(parts) < 5:
-                continue
-
-            local_addr = parts[4]
-            # Extract IP and port - handle IPv4, IPv6, and interface suffixes like %lo
-            # Matches: 127.0.0.1:5432, 127.0.0.53%lo:53, [::1]:323, <WSL2_DNS_IP>:53
-            match = re.search(r'(\[?[\da-fA-F:.]+(?:\%\w+)?\]?):(\d+)$', local_addr)
-            if not match:
-                continue
-
-            ip, port = match.groups()
-
-            # Extract process info
-            process_info = "unknown"
-            if 'users:' in line:
-                users_part = line.split('users:')[-1].strip()
-                process_info = users_part
-
-            ports[port] = {
-                "ip": ip,
-                "process": process_info,
-                "protocol": "tcp" if "tcp" in parts[0] else "udp"
-            }
-
+        for proto, path in [("tcp", "/proc/net/tcp"), ("udp", "/proc/net/udp")]:
+            for e in self._parse_proc_net(path, proto):
+                if e["state"] == "0A":
+                    ports[str(e["local_port"])] = {
+                        "ip": e["local_ip"], "process": "unknown", "protocol": e["proto"]
+                    }
         return ports
 
+    def get_listening_ports(self) -> dict:
+        """Uses 'ss -tulpn' (fallback: /proc/net)."""
+        output = self._run_cmd("ss -tulpn")
+        if output:
+            ports = {}
+            for line in output.splitlines()[1:]:
+                parts = line.split()
+                if len(parts) < 5:
+                    continue
+                local_addr = parts[4]
+                match = re.search(r'(\[?[\[\da-fA-F:.]+\]?:)(\d+)$', local_addr)
+                if not match:
+                    match = re.search(r'(\d+\.\d+\.\d+\.\d+):(\d+)$', local_addr)
+                if match:
+                    ip, port = match.groups()
+                    process_info = "unknown"
+                    if 'users:' in line:
+                        process_info = line.split('users:')[-1].strip()
+                    ports[port] = {"ip": ip, "process": process_info, "protocol": "tcp" if "tcp" in parts[0] else "udp"}
+            return ports
+        return self._get_listening_from_proc()
+
     def get_active_connections(self) -> list:
-        """Uses 'ss -tun' to find active connections."""
+        """Uses 'ss -tun' (fallback: /proc/net/tcp established)."""
         output = self._run_cmd("ss -tun")
         connections = []
-        for line in output.splitlines()[1:]:  # Skip header
-            parts = line.split()
-            if len(parts) < 6:
-                continue
-
-            # Format: Netid State Recv-Q Send-Q Local:Port Peer:Port
-            # peer can be: 127.0.0.1:5432, 127.0.0.53%lo:53, [::1]:323
-            peer = parts[5]
-
-            # Parse destination IP and port - handle IPv4, IPv6, interface suffixes
-            try:
-                dst_ip, dst_port = peer.rsplit(':', 1)
-                # Clean up IPv6 brackets
-                dst_ip = dst_ip.strip('[]')
-            except ValueError:
-                continue
-
-            proto = "tcp" if "tcp" in parts[0] else "udp"
-
-            # Local address is in parts[4]
-            local = parts[4]
-            connections.append({
-                "dst_ip": dst_ip,
-                "dst_port": int(dst_port),
-                "proto": proto,
-                "local": local
-            })
-
+        if output:
+            for line in output.splitlines()[1:]:
+                parts = line.split()
+                if len(parts) < 6:
+                    continue
+                try:
+                    peer = parts[5]
+                    dst_ip, dst_port = peer.rsplit(':', 1)
+                    connections.append({
+                        "dst_ip": dst_ip.strip('[]'),
+                        "dst_port": int(dst_port),
+                        "proto": "tcp" if "tcp" in parts[0] else "udp",
+                        "local": parts[4]
+                    })
+                except (ValueError, IndexError):
+                    continue
+            if connections:
+                return connections
+        # Fallback: non-listening TCP entries in /proc/net/tcp
+        for e in self._parse_proc_net("/proc/net/tcp", "tcp"):
+            if e["state"] != "0A":
+                connections.append({
+                    "dst_ip": e["dst_ip"], "dst_port": e["dst_port"],
+                    "proto": e["proto"], "local": f"{e['local_ip']}:{e['local_port']}"
+                })
         return connections
 
     def get_arp_table(self) -> list:
-        """Uses 'ip neigh' to get ARP/neighbor table (modern replacement for arp)."""
+        """Uses 'ip neigh' (fallback: empty list — ARP requires host networking)."""
         output = self._run_cmd("ip neigh")
-        arp_entries = []
-        for line in output.splitlines():
-            # Format: 192.168.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE
-            parts = line.split()
-            if len(parts) >= 5 and parts[3] == "lladdr":
-                arp_entries.append({
-                    "ip": parts[0],
-                    "interface": parts[2],
-                    "mac": parts[4],
-                    "state": parts[5] if len(parts) > 5 else "unknown"
-                })
-        return arp_entries
+        if output:
+            arp_entries = []
+            for line in output.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and parts[3] == "lladdr":
+                    arp_entries.append({
+                        "ip": parts[0], "interface": parts[2],
+                        "mac": parts[4], "state": parts[5] if len(parts) > 5 else "unknown"
+                    })
+            return arp_entries
+        return []
 
     def run(self) -> dict:
         """Run a full collection cycle and return the snapshot."""

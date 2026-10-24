@@ -43,8 +43,9 @@ class Sentinel:
                 
                 # Handle Drift Alerts
                 for container_id in drift:
-                    c_info = current_docker[container_id]
-                    self.notifier.notify_drift(c_info['name'], container_id)
+                    c_info = current_docker.get(container_id)
+                    if c_info and 'name' in c_info:
+                        self.notifier.notify_drift(c_info['name'], container_id)
                 
                 # 2. Host Watcher (Connection Anomaly Detection)
                 # We modify the host_watcher logic here to return anomalies instead of just logging

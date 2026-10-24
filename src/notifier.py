@@ -1,7 +1,8 @@
 import logging
 import os
 import requests
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 import configparser
 
@@ -9,39 +10,66 @@ logger = logging.getLogger("SentinelNotifier")
 
 EAT = ZoneInfo("Africa/Nairobi")
 
+# Dry-run affordance: with NOTIFY_DRY_RUN set, or this file present, alerts are
+# logged instead of delivered. Checked per call, so the file can be created and
+# removed without restarting the container. Used to exercise alert paths on
+# purpose without paging the operator.
+_DRY_RUN_PATHS = [
+    Path("/data/collector/.alert-dry-run"),
+    Path(os.getenv("SENTINEL_ROOT", "/app")) / "collector-data" / ".alert-dry-run",
+]
+
 # Quiet hours: 18:00-08:59 EAT Mon-Fri, all weekend
 QUIET_START = dtime(18, 0)
 QUIET_END = dtime(8, 59)
 QUIET_DAYS = {0, 1, 2, 3, 4}  # Mon-Fri (0=Monday in Python)
 
 
+_ENV_FILE_CANDIDATES = [
+    Path(os.getenv("SENTINEL_ROOT", "/app")) / "sentinel.env",
+    Path(os.getenv("SENTINEL_ROOT", "/app")) / "sentinel" / "sentinel.env",
+    Path(__file__).resolve().parent.parent / "sentinel" / "sentinel.env",
+]
+
+
 def _load_env_file(path: str = None) -> dict:
-    """Load key=value pairs from sentinel.env file (fallback when Docker env is stale)."""
+    """Load key=value pairs from sentinel.env (fallback when Docker env is stale).
+
+    The image copies sentinel/ to /app/sentinel/, so the file is
+    /app/sentinel/sentinel.env — the single path this used to check
+    (/app/sentinel.env) never existed, making the fallback a no-op.
+    """
     result = {}
-    env_path = path or os.getenv("SENTINEL_ROOT", "/app") + "/sentinel.env"
-    try:
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, val = line.split("=", 1)
-                    result[key.strip()] = val.strip()
-    except (FileNotFoundError, OSError):
-        pass
+    for env_path in ([Path(path)] if path else _ENV_FILE_CANDIDATES):
+        try:
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, val = line.split("=", 1)
+                        result[key.strip()] = val.strip()
+            break  # first readable file wins
+        except (FileNotFoundError, OSError):
+            continue
     return result
 
 
 class SentinelNotifier:
     def __init__(self, db=None):
-        # Use Docker DNS for OpenClaw gateway
+        # Alert gateway. Historically OpenClaw on :18789, moving to Hermes on
+        # :8888. SENTINEL_WEBHOOK_URL wins outright when set, so the target can
+        # be repointed without touching code.
         self.gateway_url = os.getenv("OPENCLAW_GATEWAY_URL", "http://openclaw:18789")
         self.hook_token = os.getenv("OPENCLAW_HOOK_TOKEN", "")
-        self.webhook_path = "/hooks/sentinel"
+        self.webhook_path = os.getenv("SENTINEL_WEBHOOK_PATH", "/hooks/sentinel")
+        self.webhook_url = (
+            os.getenv("SENTINEL_WEBHOOK_URL") or f"{self.gateway_url}{self.webhook_path}"
+        )
         self.db = db
 
     def _post_webhook(self, payload: dict) -> bool:
-        """POST to OpenClaw webhook endpoint."""
-        url = f"{self.gateway_url}{self.webhook_path}"
+        """POST to the configured alert gateway (OpenClaw, or Hermes)."""
+        url = self.webhook_url
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.hook_token}" if self.hook_token else ""
@@ -53,7 +81,7 @@ class SentinelNotifier:
             logger.info(f"Webhook delivered: {resp.status_code}")
             return True
         except requests.RequestException as e:
-            logger.error(f"Failed to deliver webhook to OpenClaw: {e}")
+            logger.error(f"Failed to deliver webhook to {url}: {e}")
             return False
 
     def is_quiet_hours(self) -> bool:
@@ -74,12 +102,18 @@ class SentinelNotifier:
         if not self.db:
             return False
         try:
-            query = "SELECT 1 FROM sentinel_db.mute_window WHERE target = %s AND muted_until_ts > NOW() AT TIME ZONE 'UTC'"
+            query = "SELECT 1 FROM mute_window WHERE target = %s AND muted_until_ts > NOW() AT TIME ZONE 'UTC'"
             res = self.db.execute(query, (target,))
             return len(res) > 0 if res else False
         except Exception as e:
             logger.warning(f"Mute check failed: {e}")
             return False
+
+    def _dry_run(self) -> bool:
+        """True when alerts should be logged rather than delivered."""
+        if os.getenv("NOTIFY_DRY_RUN"):
+            return True
+        return any(path.exists() for path in _DRY_RUN_PATHS)
 
     def should_suppress(self, severity: str, target: str = None) -> bool:
         """
@@ -109,6 +143,13 @@ class SentinelNotifier:
         if self.should_suppress(severity, target):
             return False
 
+        if self._dry_run():
+            logger.warning(
+                f"[DRY RUN] {severity} alert NOT delivered "
+                f"(target={target}): {message[:160]!r}"
+            )
+            return True
+
         severity_map = {
             "P1": "🔴 CRITICAL",
             "P2": "🟠 HIGH",
@@ -132,7 +173,7 @@ class SentinelNotifier:
             "context": context,
             "incident_id": incident_id,
             "source": "sentinel",
-            "timestamp": datetime.utcnow().isoformat() + "Z"
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
         logger.info(f"Sending {severity} alert via OpenClaw webhook")

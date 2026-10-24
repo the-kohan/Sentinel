@@ -46,7 +46,7 @@ import requests
 
 # Configuration
 SENTINEL_URL = os.getenv("SENTINEL_URL", "http://127.0.0.1:8100")
-OBSERVER_DATA_DIR = os.getenv("OBSERVER_DATA_DIR", "/mnt/e/kohanastack/sentinel/collector-data")
+OBSERVER_DATA_DIR = os.getenv("OBSERVER_DATA_DIR", str(Path(__file__).parent / "collector-data"))
 EXCLUDE_LIST_RAW = os.getenv("EXCLUDE_LIST", "")
 OBSERVATION_MODE = os.getenv("OBSERVATION_MODE", "silent")  # "silent" or "alerting"
 
@@ -100,7 +100,9 @@ class ObservationWatcher:
                 "containers": observation.get("containers"),
                 "ports": observation.get("ports"),
                 "anomalies_count": len(observation.get("anomalies", [])),
+                "topology_count": len(observation.get("topology", [])),
                 "candidates_added": observation.get("candidates_added", []),
+                "topology": observation.get("topology", [])[:10]  # Last 10 containers
             }
         }
         with open(SUMMARY_FILE, "w") as f:
@@ -124,10 +126,10 @@ class ObservationWatcher:
         except Exception:
             return []
 
-    def _fetch_drift(self) -> Dict[str, Any]:
-        """Fetch latest drift events."""
+    def _fetch_topology(self) -> Dict[str, Any]:
+        """Fetch full container topology from Sentinel API."""
         try:
-            resp = requests.get(f"{SENTINEL_URL}/query/drift", timeout=5)
+            resp = requests.get(f"{SENTINEL_URL}/query/container_topology", timeout=5)
             resp.raise_for_status()
             return resp.json()
         except Exception:
@@ -152,7 +154,7 @@ class ObservationWatcher:
 
         status = self._fetch_status()
         anomalies = self._fetch_anomalies()
-        drift = self._fetch_drift()
+        topology = self._fetch_topology()
         candidates = self._fetch_candidates()
 
         # Filter excluded patterns
@@ -164,20 +166,35 @@ class ObservationWatcher:
         # Count stats
         anomaly_count = len(filtered_anomalies)
         candidate_count = len(candidates)
-        drift_count = drift.get("total_new", 0) if isinstance(drift, dict) else 0
+        container_count = len(topology)
 
         self.total_anomalies += anomaly_count
         self.total_candidates = candidate_count
-        self.total_drift += drift_count
+        self.total_drift += container_count  # All containers = topology coverage
+
+        # Per-container detail for the log
+        container_list = [
+            {
+                "name": info.get("name", ""),
+                "id": info.get("short_id", ""),
+                "image": info.get("image", ""),
+                "status": info.get("status", ""),
+                "ip": info.get("ip", ""),
+                "ports": info.get("ports", []),
+                "health": info.get("health", ""),
+                "created": info.get("created", "")[:19] if info.get("created") else ""
+            }
+            for cid, info in topology.items()
+        ]
 
         observation = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "cycle": self.cycle_count,
-            "containers": status.get("last_docker_containers", 0),
+            "containers": container_count,
             "ports": status.get("last_host_ports", 0),
             "anomalies": filtered_anomalies,
             "candidates_added": candidates,
-            "drift_events": drift.get("new_containers", []),
+            "topology": container_list,
             "status": status.get("status", "unknown"),
             "exclude_filter": {
                 "active": bool(EXCLUDE_SET),
@@ -207,7 +224,7 @@ class ObservationWatcher:
                       f"Ports: {obs['ports']}, "
                       f"Anomalies: {len(obs['anomalies'])}, "
                       f"Candidates: {len(obs['candidates_added'])}, "
-                      f"Drift: {obs['drift_events']}")
+                      f"Topology: {len(obs.get('topology', []))} containers")
 
                 time.sleep(interval)
         except KeyboardInterrupt:

@@ -11,7 +11,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
@@ -57,7 +57,7 @@ class SentinelAnalyzer:
         
         # Get initial Docker baseline directly from socket
         if self.docker_client:
-            self.last_docker_snapshot = self._get_docker_containers()
+            self.last_docker_snapshot = self.get_container_topology()
             logger.info(f"Loaded initial Docker baseline: {len(self.last_docker_snapshot)} containers")
         
         if self.last_host_snapshot:
@@ -77,28 +77,57 @@ class SentinelAnalyzer:
                 logger.warning(f"Failed to load host-ss.json: {e}")
         return {}
 
-    def _get_docker_containers(self) -> Dict[str, Any]:
-        """Fetch current running containers directly from Docker socket."""
-        if not self.docker_client:
-            return {}
+    def get_container_topology(self) -> Dict[str, Any]:
+        """Get current container topology from Docker socket.
         
+        Returns full per-container detail: name, id, image, state, IP, ports, labels, health, created.
+        """
         try:
             containers = self.docker_client.containers.list()
-            snapshot = {}
+            topology = {}
             for c in containers:
-                ports = c.attrs.get('NetworkSettings', {}).get('Ports', {})
-                snapshot[c.id] = {
-                    "name": c.name,
-                    "image": c.image.tags[0] if c.image.tags else "unknown",
-                    "status": c.status,
-                    "ports": ports,
-                    "networks": list(c.attrs.get('NetworkSettings', {}).get('Networks', {}).keys()),
-                    "created": c.attrs.get('Created'),
-                    "labels": c.labels
+                attrs = c.attrs
+                net = attrs.get('NetworkSettings', {}).get('Networks', {})
+                ports = attrs.get('NetworkSettings', {}).get('Ports', {}) or {}
+                
+                port_list = []
+                for p, bindings in ports.items():
+                    if bindings:
+                        for b in bindings:
+                            port_list.append({
+                                "host_ip": b.get("HostIp", ""),
+                                "host_port": str(b.get("HostPort", "")),
+                                "container_port": p,
+                                "protocol": p.split('/')[1] if '/' in p else "tcp"
+                            })
+                    else:
+                        port_list.append({
+                            "host_ip": "",
+                            "host_port": "",
+                            "container_port": p,
+                            "protocol": p.split('/')[1] if '/' in p else "tcp"
+                        })
+                
+                kohana = net.get("kohana", {})
+                
+                topology[c.id] = {
+                    "name": attrs.get("Name", "").lstrip("/"),
+                    "id": c.id[:12],
+                    "short_id": c.id[:12],
+                    "image": attrs.get("Config", {}).get("Image", ""),
+                    "state": attrs.get("State", {}),
+                    "status": attrs.get("State", {}).get("Status", "unknown"),
+                    "created": attrs.get("Created", ""),
+                    "ip": kohana.get("IPAddress", ""),
+                    "network": list(net.keys()),
+                    "ports": port_list,
+                    "labels": attrs.get("Config", {}).get("Labels", {}),
+                    "health": attrs.get("State", {}).get("Health", {}).get("Status", "unknown") if attrs.get("State", {}).get("Health") else None
                 }
-            return snapshot
+            
+            return topology
         except Exception as e:
-            logger.error(f"Failed to get Docker containers: {e}")
+            logger.exception(f"Error getting container topology: {e}")
             return {}
 
     def _get_host_data(self) -> Dict[str, Any]:
@@ -194,7 +223,7 @@ class SentinelAnalyzer:
 
         try:
             # 1. Get Docker snapshot directly from socket
-            current_docker = self._get_docker_containers()
+            current_docker = self.get_container_topology()
             
             # 2. Check for Docker drift (P5)
             if self.last_docker_snapshot:
@@ -276,7 +305,22 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Sentinel Analyzer API", lifespan=lifespan)
 
 
-@app.get("/status")
+@ app.get("/query/container_topology")
+async def get_container_topology():
+    """Fetch full per-container topology snapshot (current cycle, live from Docker socket).
+    
+    Returns every container Sentinel sees via Docker socket with:
+    - name, id, image, status, IP, ports (host->container mapping), labels, health, created
+    
+    Example: GET /query/container_topology → all containers with full detail
+    """
+    if not analyzer_instance:
+        raise HTTPException(status_code=503, detail="Analyzer not initialized")
+    
+    return analyzer_instance.get_container_topology()
+
+
+@ app.get("/status")
 async def get_status():
     return {
         "status": "active",
@@ -284,11 +328,12 @@ async def get_status():
         "db": "connected",
         "cycles_completed": analyzer_instance.cycle_count if analyzer_instance else 0,
         "last_docker_containers": len(analyzer_instance.last_docker_snapshot) if analyzer_instance else 0,
-        "last_host_ports": len(analyzer_instance.last_host_snapshot.get('listening_ports', {})) if analyzer_instance else 0
+        "last_host_ports": len(analyzer_instance.last_host_snapshot.get('listening_ports', {})) if analyzer_instance else 0,
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 
-@app.get("/query/drift")
+@ app.get("/query/drift")
 async def get_drift():
     """Fetch the latest container drift events."""
     query = "SELECT * FROM sentinel_db.topology_snapshots ORDER BY snapshot_ts DESC LIMIT 1"
@@ -296,7 +341,7 @@ async def get_drift():
     return {"latest_snapshot": snapshot[0] if snapshot else None}
 
 
-@app.get("/query/diff")
+@ app.get("/query/diff")
 async def get_topology_diff(days: int = 1):
     """
     Compare latest topology snapshot with one from N days ago.
@@ -356,21 +401,21 @@ async def get_topology_diff(days: int = 1):
         "compared": f"previous snapshot vs latest (interval: {days} day(s))",
         "new_containers": [old_containers[cid] if cid not in new_containers else new_containers[cid] for cid in new_containers_set],
         "removed_containers": list(old_containers[cid].get('name', cid) for cid in removed_containers_set),
-        "new_ports": list(new_ports[cid] for cid in new_ports_set),
-        "removed_ports": list(old_ports[cid].get('ip', cid) + ':' + str(cid) for cid in removed_ports_set),
+        "new_ports": [f"{new_ports[p].get('ip', '') if isinstance(new_ports.get(p), dict) else ''}:{p}" for p in new_ports_set],
+        "removed_ports": [f"{old_ports[p].get('ip', '') if isinstance(old_ports.get(p), dict) else ''}:{p}" for p in removed_ports_set],
         "new_arp_entries": new_arp_entries,
         "total_new": len(new_containers_set) + len(new_ports_set) + len(new_arp_entries)
     }
 
 
-@app.get("/query/anomalies")
+@ app.get("/query/anomalies")
 async def get_anomalies(limit: int = 10):
     """Fetch the most recent unrecognized network events."""
     query = "SELECT * FROM sentinel_db.events WHERE source = 'host' ORDER BY ts DESC LIMIT %s"
     return analyzer_instance.db.execute(query, (limit,)) if analyzer_instance else []
 
 
-@app.get("/query/collectors")
+@ app.get("/query/collectors")
 async def get_collector_status():
     """Check collector file freshness."""
     host_file = Path("/data/collector/host-ss.json")
@@ -388,7 +433,7 @@ async def get_collector_status():
     }
 
 
-@app.post("/mute")
+@ app.post("/mute")
 async def mute_target(target: str, duration: str = "1h", reason: str = "operator mute"):
     """
     Mute alerts for a target (container, IP, port, pattern).
@@ -430,7 +475,7 @@ async def mute_target(target: str, duration: str = "1h", reason: str = "operator
     return {"muted": target, "until": muted_until.isoformat(), "reason": reason}
 
 
-@app.get("/mute")
+@ app.get("/mute")
 async def list_mutes():
     """List active mute windows."""
     if not analyzer_instance:
@@ -440,7 +485,7 @@ async def list_mutes():
     return analyzer_instance.db.execute(query)
 
 
-@app.delete("/mute/{target}")
+@ app.delete("/mute/{target}")
 async def unmute_target(target: str):
     """Remove a mute window."""
     if not analyzer_instance:
@@ -452,7 +497,7 @@ async def unmute_target(target: str):
     return {"unmuted": target}
 
 
-@app.get("/query/candidates")
+@ app.get("/query/candidates")
 async def get_candidates():
     """Fetch all observation candidates from known_good table (for watcher review)."""
     if not analyzer_instance:
@@ -467,7 +512,7 @@ async def get_candidates():
     return analyzer_instance.db.execute(query)
 
 
-@app.post("/promote")
+@ app.post("/promote")
 async def promote_candidate(pattern: str):
     """Promote an observation candidate to permanent allowlist entry (remove expiry)."""
     if not analyzer_instance:
@@ -479,7 +524,7 @@ async def promote_candidate(pattern: str):
     return {"promoted": pattern}
 
 
-@app.get("/query/observation_log")
+@ app.get("/query/observation_log")
 async def get_observation_log(limit: int = 100):
     """Fetch recent observation log entries (for operator review after 48h)."""
     if not analyzer_instance:

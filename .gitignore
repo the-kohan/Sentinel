@@ -1,1 +1,32 @@
+# ── Secrets ───────────────────────────────────────────────────────────
+# Live stack credentials. Never tracked.
+.env
+.env_pass_tmp
+sentinel/sentinel.env
+
+# ── Python ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# ── Node / Next.js ────────────────────────────────────────────────────
+dashboard/node_modules/
+dashboard/.next/
+dashboard/out/
+dashboard/next-env.d.ts
+dashboard/*.log*
+
+# ── Collector artifacts (regenerated at runtime) ──────────────────────
+# Keep backfill.py — it is source, not output.
 collector-data/*
+!collector-data/backfill.py
+
+# ── Git worktrees ─────────────────────────────────────────────────────
+.worktrees/
+
+# ── OS / editor ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp

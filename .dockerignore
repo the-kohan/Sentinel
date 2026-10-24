@@ -1,0 +1,36 @@
+# Build context filter. Without this, every `docker compose build` ships the
+# entire directory to the builder — including dashboard/node_modules (hundreds
+# of thousands of files on a Windows filesystem) and the 45MB collector log.
+# That was the real cause of 20-45 minute builds; the Dockerfile's npm install
+# was a red herring.
+
+# ── Secrets — must never enter the build context ──────────────────────
+.env
+.env_pass_tmp
+sentinel/sentinel.env
+
+# ── Python ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# ── Dashboard build artifacts ─────────────────────────────────────────
+# The image runs its own `npm ci` and `next build`; host copies are ignored.
+dashboard/node_modules/
+dashboard/.next/
+dashboard/out/
+dashboard/*.log*
+
+# ── Collector data (bind-mounted at runtime, not baked in) ────────────
+collector-data/
+
+# ── Git / worktrees ───────────────────────────────────────────────────
+.git/
+.worktrees/
+
+# ── Docs & local dev files not needed in the image ────────────────────
+*.md
+.gitignore
+.dockerignore
+docker-compose*.y*ml

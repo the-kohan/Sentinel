@@ -1,0 +1,30 @@
+[Unit]
+Description=Sentinel Observation Watcher — persists 48h network observation to disk
+Documentation=file:///mnt/e/kohanastack/sentinel/observer.py
+After=network-online.target docker-postgres.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kohan
+WorkingDirectory=/mnt/e/kohanastack/sentinel
+Environment=SENTINEL_URL=http://127.0.0.1:8100
+Environment=OBSERVER_DATA_DIR=/mnt/e/kohanastack/sentinel/collector-data
+Environment=OBSERVATION_MODE=silent
+Environment=EXCLUDE_LIST=
+ExecStart=/usr/bin/python3 /mnt/e/kohanastack/sentinel/observer.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sentinel-observer
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/mnt/e/kohanastack/sentinel/collector-data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
