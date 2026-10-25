@@ -526,9 +526,9 @@ async def setup_confirm(payload: dict):
     patterns = payload.get("patterns", []) if isinstance(payload, dict) else []
     inserted = 0
     for p in patterns:
-        pattern = p.get("pattern")
-        source = p.get("source", "setup")
-        reason = p.get("reason", "first-time setup")
+        pattern = (p.get("pattern") or "")[:256]
+        source = (p.get("source") or "setup")[:64]
+        reason = (p.get("reason") or "first-time setup")[:256]
         if not pattern:
             continue
         try:
@@ -768,7 +768,10 @@ async def get_ports():
 
 @ app.get("/api/topology/history")
 async def get_topology_history(hours: int = Query(24, ge=1, le=720), limit: int = Query(50, ge=1, le=500)):
-    results = db.execute(f"SELECT snapshot_ts, containers, listening_ports, arp_table FROM topology_snapshots WHERE snapshot_ts > NOW() AT TIME ZONE 'UTC' - INTERVAL '{max(1, min(hours, 720))} hours' ORDER BY snapshot_ts DESC LIMIT {limit}")
+    results = db.execute(
+    "SELECT snapshot_ts, containers, listening_ports, arp_table FROM topology_snapshots WHERE snapshot_ts > NOW() AT TIME ZONE 'UTC' - INTERVAL %s ORDER BY snapshot_ts DESC LIMIT %s",
+    (f"{max(1, min(hours, 720))} hours", limit),
+)
     return {"snapshots": [dict(r) for r in results] if results else []}
 
 
@@ -932,7 +935,7 @@ async def get_mutes():
 
 
 @ app.post("/api/mute")
-async def add_mute(target: str, duration_minutes: int, reason: str = "operator mute"):
+async def add_mute(target: str, duration_minutes: int = Query(..., ge=1, le=10080), reason: str = "operator mute"):
     db.execute("INSERT INTO mute_window (target, muted_until_ts, reason, created_ts) VALUES (%s, NOW() AT TIME ZONE 'UTC' + INTERVAL '%s minutes', %s, NOW() AT TIME ZONE 'UTC') ON CONFLICT (target) DO UPDATE SET muted_until_ts = EXCLUDED.muted_until_ts, reason = EXCLUDED.reason, created_ts = EXCLUDED.created_ts", (target, str(duration_minutes), reason))
     return {"status": "muted", "target": target, "duration_minutes": duration_minutes}
 
