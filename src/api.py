@@ -424,8 +424,11 @@ async def get_setup_status():
     
     # Check allowlist
     allow_count = db.execute("SELECT count(*) as cnt FROM known_good")[0]["cnt"]
+    operator_count = db.execute("SELECT count(*) as cnt FROM known_good WHERE added_by = 'operator'")[0]["cnt"]
     if allow_count == 0:
         issues.append("empty_allowlist")
+
+    setup_complete = operator_count > 0
     
     # Check incidents
     inc_count = db.execute("SELECT count(*) as cnt FROM incidents WHERE closed_ts IS NULL")[0]["cnt"]
@@ -444,10 +447,115 @@ async def get_setup_status():
         "allowlist_count": allow_count,
         "open_incidents": inc_count,
         "telegram_configured": telegram_configured,
+        "setup_complete": setup_complete,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 
+@ app.get("/api/setup/discover")
+async def setup_discover():
+    """Read-only discovery of running containers + host ports for first-time setup."""
+    import docker
+    containers = []
+    try:
+        client = _get_docker_client()
+        if client:
+            for c in client.containers.list():
+                ports = {}
+                try:
+                    ports = c.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
+                except Exception:
+                    ports = {}
+                exposed = []
+                for k, v in (ports or {}).items():
+                    exposed.append(k)
+                containers.append({
+                    "id": c.id[:12],
+                    "name": c.name,
+                    "status": c.status,
+                    "image": (c.image.tags[0] if c.image.tags else str(c.image.id)[:12]),
+                    "exposed_ports": exposed,
+                })
+    except Exception as e:
+        logger.warning(f"Docker discovery failed: {e}")
+
+    host = _load_host_snapshot() or {}
+    host_ports = host.get("listening_ports") or []
+    # normalize
+    normalized_ports = []
+    for p in host_ports:
+        if isinstance(p, dict):
+            normalized_ports.append({
+                "port": p.get("port") or p.get("local_port"),
+                "proto": p.get("proto") or p.get("protocol", "tcp"),
+                "process": p.get("process") or p.get("name"),
+            })
+        else:
+            normalized_ports.append({"port": p, "proto": "tcp", "process": None})
+
+    suggested = []
+    for c in containers:
+        for ep in c["exposed_ports"]:
+            # ep like "80/tcp"
+            port = ep.split("/")[0]
+            suggested.append({"pattern": f"container:{c['name']}", "source": "docker", "reason": f"discovered container {c['name']}"})
+    for hp in normalized_ports:
+        if hp.get("port"):
+            suggested.append({"pattern": f"127.0.0.1:{hp['port']}", "source": "host", "reason": "discovered host port"})
+
+    # de-dupe
+    seen = set()
+    uniq = []
+    for s in suggested:
+        if s["pattern"] in seen:
+            continue
+        seen.add(s["pattern"])
+        uniq.append(s)
+
+    return {
+        "containers": containers,
+        "host_ports": normalized_ports,
+        "suggested_patterns": uniq,
+        "host_snapshot_present": bool(host),
+    }
+
+
+@ app.post("/api/setup/confirm")
+async def setup_confirm(payload: dict):
+    """Persist operator-confirmed allowlist patterns. Idempotent."""
+    patterns = payload.get("patterns", []) if isinstance(payload, dict) else []
+    inserted = 0
+    for p in patterns:
+        pattern = p.get("pattern")
+        source = p.get("source", "setup")
+        reason = p.get("reason", "first-time setup")
+        if not pattern:
+            continue
+        try:
+            db.execute(
+                """INSERT INTO known_good (pattern, source, reason, added_by, expiry)
+                   VALUES (%s, %s, %s, %s, NULL)
+                   ON CONFLICT (pattern) DO NOTHING""",
+                (pattern, source, reason, "operator"),
+            )
+            inserted += 1
+        except Exception as e:
+            logger.warning(f"setup_confirm insert failed for {pattern}: {e}")
+
+    # mark complete via a flag file (Postgres is source of truth for rows)
+    try:
+        flag = Path("/data/collector/.setup-complete")
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.write_text("ok")
+    except Exception:
+        try:
+            flag = Path(__file__).resolve().parent.parent / "collector-data" / ".setup-complete"
+            flag.parent.mkdir(parents=True, exist_ok=True)
+            flag.write_text("ok")
+        except Exception as e:
+            logger.warning(f"could not write setup flag: {e}")
+
+    return {"saved": inserted, "total_submitted": len(patterns)}
 @ app.post("/api/setup/telegram")
 async def configure_telegram(token: str, chat_id: str):
     """Save Telegram bot token and chat ID to the environment file and restart notifier."""

@@ -227,7 +227,7 @@ async function fetchJson<T>(url: string): Promise<T | null> {
  * Widget: Network Topology (lg) — Models-style aggregate + distribution
  * ------------------------------------------------------------------ */
 
-function TopologyWidget() {
+function TopologyWidget({ expanded = false }: { expanded?: boolean } = {}) {
   const t = useTick(5000);
   const [data, setData] = useState<{ containers: number; connections: number; listeningPorts: number } | null>(null);
 
@@ -280,7 +280,7 @@ function TopologyWidget() {
  * Widget: Live Traffic (wide) — Runs-style 24h heatmap + rate
  * ------------------------------------------------------------------ */
 
-function TrafficWidget() {
+function TrafficWidget({ expanded = false }: { expanded?: boolean } = {}) {
   const t = useTick(2000);
   const [summary, setSummary] = useState<{ events_by_source?: Record<string, number> } | null>(null);
 
@@ -348,7 +348,7 @@ function TrafficWidget() {
  * Widget: Baseline Deviation (sm) — Failures-style categorized breakdown
  * ------------------------------------------------------------------ */
 
-function BaselineWidget() {
+function BaselineWidget({ expanded = false }: { expanded?: boolean } = {}) {
   const t = useTick(3000);
   const [data, setData] = useState<{ deviations: number; totalChecked: number } | null>(null);
 
@@ -394,7 +394,7 @@ function BaselineWidget() {
  * Widget: Port Monitor (sm) — Evals-style score + metric rows
  * ------------------------------------------------------------------ */
 
-function PortMonitorWidget() {
+function PortMonitorWidget({ expanded = false }: { expanded?: boolean } = {}) {
   const t = useTick(5000);
   const [data, setData] = useState<{ listening: number; connections: number; ports: Array<{ port: number; proto: string }> } | null>(null);
 
@@ -448,7 +448,7 @@ function PortMonitorWidget() {
  * Widget: Anomalies (tall) — Traces-style live list with duration bars
  * ------------------------------------------------------------------ */
 
-function AnomaliesWidget() {
+function AnomaliesWidget({ expanded = false }: { expanded?: boolean } = {}) {
   const t = useTick(2000);
   const [data, setData] = useState<{ anomalies: Array<{ id: string; type: string; severity: string; dst_ip: string }>; total: number } | null>(null);
 
@@ -516,7 +516,7 @@ function AnomaliesWidget() {
  * Widget: Source Reputation (sm) — Health-style uptime + pulse + strip
  * ------------------------------------------------------------------ */
 
-function ReputationWidget() {
+function ReputationWidget({ expanded = false }: { expanded?: boolean } = {}) {
   const t = useTick(5000);
   const [data, setData] = useState<{ benign: number; suspicious: number; unknown: number } | null>(null);
 
@@ -569,7 +569,7 @@ function ReputationWidget() {
  * Widget: Events (wide) — Tools-style ranked table with bars
  * ------------------------------------------------------------------ */
 
-function EventsWidget() {
+function EventsWidget({ expanded = false }: { expanded?: boolean } = {}) {
   const t = useTick(3000);
   const [data, setData] = useState<{ events: Array<{ id: number; ts: string; source: string; src_ip: string; dst_ip: string; proto: string }>; total: number } | null>(null);
 
@@ -667,7 +667,7 @@ function EventsWidget() {
  * Widget: Allowlist (sm) - known good entries
  * ------------------------------------------------------------------ */
 
-function AllowlistWidget() {
+function AllowlistWidget({ expanded = false }: { expanded?: boolean } = {}) {
   const t = useTick(5000);
   const [data, setData] = useState<{ entries: Array<{ pattern: string; source: string; reason: string }>; total: number } | null>(null);
 
@@ -706,7 +706,7 @@ function AllowlistWidget() {
  * Widget: Top Talkers (sm) — Cost-style 14-day bars + MTD + delta
  * ------------------------------------------------------------------ */
 
-function TopTalkersWidget() {
+function TopTalkersWidget({ expanded = false }: { expanded?: boolean } = {}) {
   const t = useTick(3000);
   const [data, setData] = useState<{ top_talkers?: Array<{ dst_ip: string; contacts: number; last_seen: string }> } | null>(null);
 
@@ -765,7 +765,7 @@ function TopTalkersWidget() {
  * Render map
  * ------------------------------------------------------------------ */
 
-const VIEWS: Record<Kind, () => ReactNode> = {
+const VIEWS: Record<Kind, (props?: { expanded?: boolean }) => ReactNode> = {
   topology: TopologyWidget,
   traffic: TrafficWidget,
   baseline: BaselineWidget,
@@ -777,9 +777,9 @@ const VIEWS: Record<Kind, () => ReactNode> = {
   talkers: TopTalkersWidget,
 };
 
-const renderWidget = (item: SentinelWidget) => {
+const renderWidget = (item: SentinelWidget, expanded: boolean) => {
   const View = VIEWS[item.kind];
-  return <View />;
+  return <View expanded={expanded} />;
 };
 
 /* ------------------------------------------------------------------ *
@@ -811,7 +811,7 @@ export default function DashboardPage() {
           <LiveContext.Provider value={live}>
             <DraggableWidgetGrid
               items={WIDGETS}
-              renderItem={(item) => renderWidget(item as SentinelWidget)}
+              renderItem={(item, _size, expanded) => renderWidget(item as SentinelWidget, expanded)}
               editable
               maxColumns={6}
             />

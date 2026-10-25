@@ -336,7 +336,7 @@ async def get_status():
 @ app.get("/query/drift")
 async def get_drift():
     """Fetch the latest container drift events."""
-    query = "SELECT * FROM sentinel_db.topology_snapshots ORDER BY snapshot_ts DESC LIMIT 1"
+    query = "SELECT * FROM topology_snapshots ORDER BY snapshot_ts DESC LIMIT 1"
     snapshot = analyzer_instance.db.execute(query) if analyzer_instance else None
     return {"latest_snapshot": snapshot[0] if snapshot else None}
 
@@ -354,7 +354,7 @@ async def get_topology_diff(days: int = 1):
     cutoff = f"NOW() AT TIME ZONE 'UTC' - interval '{days} day'"
     
     query = f"""
-        SELECT * FROM sentinel_db.topology_snapshots
+        SELECT * FROM topology_snapshots
         WHERE snapshot_ts >= {cutoff}
         ORDER BY snapshot_ts ASC, snapshot_ts DESC
         LIMIT 1
@@ -362,7 +362,7 @@ async def get_topology_diff(days: int = 1):
     older = analyzer_instance.db.execute(query)
     
     query = f"""
-        SELECT * FROM sentinel_db.topology_snapshots
+        SELECT * FROM topology_snapshots
         WHERE snapshot_ts >= {cutoff}
         ORDER BY snapshot_ts DESC
         LIMIT 1
@@ -411,7 +411,7 @@ async def get_topology_diff(days: int = 1):
 @ app.get("/query/anomalies")
 async def get_anomalies(limit: int = 10):
     """Fetch the most recent unrecognized network events."""
-    query = "SELECT * FROM sentinel_db.events WHERE source = 'host' ORDER BY ts DESC LIMIT %s"
+    query = "SELECT * FROM events WHERE source = 'host' ORDER BY ts DESC LIMIT %s"
     return analyzer_instance.db.execute(query, (limit,)) if analyzer_instance else []
 
 
@@ -463,7 +463,7 @@ async def mute_target(target: str, duration: str = "1h", reason: str = "operator
     muted_until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
     
     query = """
-        INSERT INTO sentinel_db.mute_window (target, muted_until_ts, reason, created_ts)
+        INSERT INTO mute_window (target, muted_until_ts, reason, created_ts)
         VALUES (%s, %s, %s, NOW() AT TIME ZONE 'UTC')
         ON CONFLICT (target) DO UPDATE SET
             muted_until_ts = EXCLUDED.muted_until_ts,
@@ -481,7 +481,7 @@ async def list_mutes():
     if not analyzer_instance:
         raise HTTPException(status_code=503, detail="Analyzer not initialized")
     
-    query = "SELECT target, muted_until_ts, reason, created_ts FROM sentinel_db.mute_window WHERE muted_until_ts > NOW() AT TIME ZONE 'UTC' ORDER BY muted_until_ts"
+    query = "SELECT target, muted_until_ts, reason, created_ts FROM mute_window WHERE muted_until_ts > NOW() AT TIME ZONE 'UTC' ORDER BY muted_until_ts"
     return analyzer_instance.db.execute(query)
 
 
@@ -491,7 +491,7 @@ async def unmute_target(target: str):
     if not analyzer_instance:
         raise HTTPException(status_code=503, detail="Analyzer not initialized")
     
-    query = "DELETE FROM sentinel_db.mute_window WHERE target = %s"
+    query = "DELETE FROM mute_window WHERE target = %s"
     analyzer_instance.db.execute(query, (target,))
     
     return {"unmuted": target}
@@ -505,7 +505,7 @@ async def get_candidates():
     
     query = """
         SELECT pattern, source, reason, added_ts, expiry, added_by
-        FROM sentinel_db.known_good
+        FROM known_good
         WHERE added_by = 'sentinel:observation'
         ORDER BY added_ts DESC
     """
@@ -518,7 +518,7 @@ async def promote_candidate(pattern: str):
     if not analyzer_instance:
         raise HTTPException(status_code=503, detail="Analyzer not initialized")
     
-    query = "UPDATE sentinel_db.known_good SET expiry = NULL, added_by = 'operator' WHERE pattern = %s AND expiry IS NOT NULL"
+    query = "UPDATE known_good SET expiry = NULL, added_by = 'operator' WHERE pattern = %s AND expiry IS NOT NULL"
     analyzer_instance.db.execute(query, (pattern,))
     
     return {"promoted": pattern}
@@ -532,7 +532,7 @@ async def get_observation_log(limit: int = 100):
     
     query = """
         SELECT pattern, source, reason, added_ts, expiry, added_by
-        FROM sentinel_db.known_good
+        FROM known_good
         WHERE added_by = 'sentinel:observation'
         ORDER BY added_ts DESC
         LIMIT %s

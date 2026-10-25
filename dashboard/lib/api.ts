@@ -168,6 +168,15 @@ export const api = {
   },
   search: (q: string) => fetchJSON<{ events: Event[]; reputation: ReputationEntry[]; allowlist: AllowlistEntry[] }>(`/api/query/search?q=${encodeURIComponent(q)}`),
   getBaselineDeviations: () => fetchJSON<{ deviations: any[]; baseline_source: string }>(`/api/baseline/deviations`),
+  getSetupDiscover: () => fetchJSON<any>("/api/setup/discover"),
+  setupConfirm: async (patterns: { pattern: string; source: string; reason: string }[]) => {
+    const res = await fetch(`${API_BASE}/api/setup/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patterns }),
+    });
+    return res.json();
+  },
   configureTelegram: async (token: string, chat_id: string) => {
     const res = await fetch(`${API_BASE}/api/setup/telegram`, {
       method: "POST",

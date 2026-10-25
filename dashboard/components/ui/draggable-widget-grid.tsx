@@ -34,7 +34,7 @@ export interface WidgetItem {
 export interface DraggableWidgetGridProps {
   items?: WidgetItem[]
   onChange?: (items: WidgetItem[]) => void
-  renderItem?: (item: WidgetItem, size: WidgetSize) => ReactNode
+  renderItem?: (item: WidgetItem, size: WidgetSize, expanded: boolean) => ReactNode
   editable?: boolean
   maxColumns?: number
   cellSize?: number
@@ -392,6 +392,8 @@ const Widget = memo(function Widget({
   hintId,
   position,
   count,
+  expanded,
+  onToggle,
   renderItem,
 }: {
   item: WidgetItem
@@ -405,11 +407,13 @@ const Widget = memo(function Widget({
   held: boolean
   raised: boolean
   landed: boolean
+  expanded: boolean
+  onToggle: () => void
   handlers: WidgetHandlers
   hintId: string
   position: number
   count: number
-  renderItem?: (item: never, size: WidgetSize) => ReactNode
+  renderItem?: (item: never, size: WidgetSize, expanded: boolean) => ReactNode
 }) {
   const controls = useDragControls()
   const node = useRef<HTMLDivElement | null>(null)
@@ -529,6 +533,12 @@ const Widget = memo(function Widget({
           e.stopPropagation()
         }
       }}
+      onClick={(e) => {
+        if (handlers.swallow()) return
+        const t = e.target as HTMLElement
+        if (t.closest('a, button, input, textarea, select, [data-no-expand]')) return
+        onToggle()
+      }}
       animate={{
         scale: phase === 'holding' ? 0.97 : phase === 'lifted' ? LIFT_SCALE : 1,
         boxShadow: phase === 'lifted' ? SHADOW_LIFTED : SHADOW_REST,
@@ -561,13 +571,20 @@ const Widget = memo(function Widget({
         className={`relative isolate flex h-full w-full flex-col overflow-hidden rounded-[var(--widget-radius)] bg-card text-card-foreground ring-inset transition-shadow duration-300 [clip-path:inset(0_round_var(--widget-radius))] ${
           landed ? 'ring-2 ring-foreground/40' : 'ring-1 ring-border'
         }`}>
-        {renderItem?.(item as never, sizeOf(w, h))}
+        {renderItem?.(item as never, sizeOf(w, h), expanded)}
       </motion.div>
     </motion.div>
   )
 })
 
 /* ── Grid ── */
+const EXPANDED_SIZE: Record<WidgetSize, WidgetSize> = {
+  sm: 'wide',
+  wide: 'lg',
+  tall: 'lg',
+  lg: 'lg',
+}
+
 export function DraggableWidgetGrid({
   items: initialItems,
   onChange,
@@ -580,6 +597,7 @@ export function DraggableWidgetGrid({
   className = '',
 }: DraggableWidgetGridProps) {
   const [items, setItems] = useState<WidgetItem[]>(() => initialItems ?? DEFAULT_ITEMS)
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set())
   const grid = useRef<HTMLDivElement | null>(null)
   const hintId = useId()
   const minColumns = Math.min(2, Math.max(1, maxColumns))
@@ -608,8 +626,16 @@ export function DraggableWidgetGrid({
     return () => observer.disconnect()
   }, [maxColumns, minColumns, cellSize, gap])
 
+  const effectiveItems = useMemo(
+    () =>
+      items.map((i) =>
+        expandedIds.has(i.id) ? { ...i, size: EXPANDED_SIZE[i.size] } : i,
+      ),
+    [items, expandedIds],
+  )
+
   const columns = metrics.columns || Math.max(minColumns, maxColumns)
-  const placements = useMemo(() => layout(items, columns), [items, columns])
+  const placements = useMemo(() => layout(effectiveItems, columns), [effectiveItems, columns])
   const rows = placements.reduce((n, p) => Math.max(n, p.row + p.h), 0)
 
   const latest = useRef({ items, metrics, onChange })
@@ -772,8 +798,8 @@ export function DraggableWidgetGrid({
   )
 
   const byId = useMemo(
-    () => new Map(items.map((item) => [item.id, item])),
-    [items],
+    () => new Map(effectiveItems.map((item) => [item.id, item])),
+    [effectiveItems],
   )
 
   const domOrder = useRef<string[]>(items.map((item) => item.id))
@@ -829,10 +855,19 @@ export function DraggableWidgetGrid({
                 held={held === p.id}
                 raised={raised === p.id}
                 landed={landed === p.id}
+                expanded={expandedIds.has(id)}
+                onToggle={() =>
+                  setExpandedIds((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(id)) next.delete(id)
+                    else next.add(id)
+                    return next
+                  })
+                }
                 handlers={handlers}
                 hintId={hintId}
                 renderItem={
-                  renderItem as (item: never, size: WidgetSize) => ReactNode
+                  renderItem as (item: never, size: WidgetSize, expanded: boolean) => ReactNode
                 }
               />
             )

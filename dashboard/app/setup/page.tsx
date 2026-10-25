@@ -9,7 +9,14 @@ export default function SetupPage() {
   const [tgToken, setTgToken] = useState("");
   const [tgChatId, setTgChatId] = useState("");
   const [tgSaving, setTgSaving] = useState(false);
+  const [discover, setDiscover] = useState<any>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [savingSetup, setSavingSetup] = useState(false);
   const [tgSaved, setTgSaved] = useState(false);
+
+  useEffect(() => {
+    api.getSetupDiscover().then(setDiscover).catch(console.error);
+  }, []);
 
   useEffect(() => {
     api.getSetupStatus().then(setStatus).catch(console.error).finally(() => setLoading(false));
@@ -27,6 +34,22 @@ export default function SetupPage() {
       console.error(err);
     } finally {
       setTgSaving(false);
+    }
+  }
+
+  async function saveSetup() {
+    const patterns = (discover?.suggested_patterns || [])
+      .filter((p: any) => selected.has(p.pattern))
+      .map((p: any) => ({ pattern: p.pattern, source: p.source, reason: p.reason }));
+    setSavingSetup(true);
+    try {
+      await api.setupConfirm(patterns);
+      const s = await api.getSetupStatus();
+      setStatus(s);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSavingSetup(false);
     }
   }
 
@@ -140,6 +163,40 @@ export default function SetupPage() {
           </ul>
         </div>
       )}
+
+      {/* Discovered services */}
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-5">
+        <h2 className="text-lg font-semibold mb-1">Discovered services</h2>
+        <p className="text-sm text-[var(--muted)] mb-3">Select known services/ports to add to the allowlist. Nothing is saved until you confirm.</p>
+        <div className="space-y-2 max-h-64 overflow-auto">
+          {(discover?.suggested_patterns || []).map((p: any) => (
+            <label key={p.pattern} className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={selected.has(p.pattern)}
+                onChange={(e) => {
+                  const next = new Set(selected);
+                  if (e.target.checked) next.add(p.pattern);
+                  else next.delete(p.pattern);
+                  setSelected(next);
+                }}
+              />
+              <span className="font-mono text-xs">{p.pattern}</span>
+              <span className="text-[var(--muted)] text-xs">— {p.reason}</span>
+            </label>
+          ))}
+          {(discover?.suggested_patterns || []).length === 0 && (
+            <p className="text-sm text-[var(--muted)]">No suggestions yet (host snapshot may be empty).</p>
+          )}
+        </div>
+        <button
+          onClick={saveSetup}
+          disabled={savingSetup || selected.size === 0}
+          className="mt-3 px-4 py-2 rounded-lg text-sm font-medium bg-ring text-ring-foreground hover:bg-ring/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {savingSetup ? "Saving..." : `Save ${selected.size} selected`}
+        </button>
+      </div>
 
       {/* Quick Info */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--muted)]">
