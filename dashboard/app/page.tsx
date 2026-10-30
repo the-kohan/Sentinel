@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import DraggableWidgetGrid, { type WidgetItem } from "@/components/ui/draggable-widget-grid";
+import { api } from "@/lib/api";
 
 /* ------------------------------------------------------------------ *
  * Sentinel widget kinds
@@ -23,7 +24,8 @@ type Kind =
   | "reputation"
   | "events"
   | "allowlist"
-  | "talkers";
+  | "talkers"
+  | "query";
 
 interface SentinelWidget extends WidgetItem {
   kind: Kind;
@@ -39,6 +41,7 @@ const WIDGETS: SentinelWidget[] = [
   { id: "events", kind: "events", size: "wide", label: "Events" },
   { id: "allowlist", kind: "allowlist", size: "sm", label: "Allowlist" },
   { id: "talkers", kind: "talkers", size: "sm", label: "Top Talkers" },
+  { id: "query", kind: "query", size: "wide", label: "Query" },
 ];
 
 /* ------------------------------------------------------------------ *
@@ -761,11 +764,125 @@ function TopTalkersWidget({ expanded = false }: { expanded?: boolean } = {}) {
   );
 }
 
+
+
+/* ------------------------------------------------------------------ *
+ * Widget: Query (wide) — search across events, reputation, allowlist
+ * ------------------------------------------------------------------ */
+
+function QueryWidget({ expanded = false }: { expanded?: boolean } = {}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<{
+    events: any[];
+    reputation: any[];
+    allowlist: any[];
+  } | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function runSearch() {
+    if (!query.trim()) return;
+    setLoading(true);
+    try {
+      const res = await api.search(query);
+      setResults({
+        events: res.events || [],
+        reputation: res.reputation || [],
+        allowlist: res.allowlist || [],
+      });
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Shell title="Query" meta={loading ? "searching…" : results ? `${results.events.length} events, ${results.reputation.length} rep, ${results.allowlist.length} allow` : "ready"}>
+      <div className="flex gap-2 mb-3">
+        <input
+          type="text"
+          placeholder="Search IPs, ports, patterns…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && runSearch()}
+          className="flex-1 bg-[var(--surface-2)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--fg)] placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+        <button
+          onClick={runSearch}
+          disabled={loading || !query.trim()}
+          className="px-4 py-2 rounded-lg text-sm font-medium bg-ring text-ring-foreground hover:bg-ring/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {loading ? "Searching…" : "Search"}
+        </button>
+      </div>
+
+      {results && (
+        <div className="space-y-3">
+          {results.events.length > 0 && (
+            <details className="group" open={expanded}>
+              <summary className="flex items-center gap-2 cursor-pointer text-sm font-medium text-[var(--fg)]">
+                <span className="text-[12px] text-[var(--muted)]">📊 Events ({results.events.length})</span>
+              </summary>
+              <div className="mt-2 space-y-1 text-[12px]">
+                {results.events.slice(0, 8).map((e, i) => (
+                  <div key={i} className="font-mono text-[var(--fg)]">
+                    {e.src_ip || "?"} → {e.dst_ip || "?"} {e.proto ? `(${e.proto})` : ""}
+                  </div>
+                ))}
+                {results.events.length > 8 && (
+                  <div className="text-[var(--muted)]">+{results.events.length - 8} more</div>
+                )}
+              </div>
+            </details>
+          )}
+          {results.reputation.length > 0 && (
+            <details className="group" open={expanded}>
+              <summary className="flex items-center gap-2 cursor-pointer text-sm font-medium text-[var(--fg)]">
+                <span className="text-[12px] text-[var(--muted)]">👤 Reputation ({results.reputation.length})</span>
+              </summary>
+              <div className="mt-2 space-y-1 text-[12px]">
+                {results.reputation.slice(0, 8).map((r, i) => (
+                  <div key={i} className="font-mono">
+                    {r.identifier} — <span className={r.verdict === "suspicious" ? "text-rose-400" : r.verdict === "benign" ? "text-emerald-400" : "text-amber-400"}>{r.verdict}</span> ({r.contact_count} contacts)
+                  </div>
+                ))}
+                {results.reputation.length > 8 && (
+                  <div className="text-[var(--muted)]">+{results.reputation.length - 8} more</div>
+                )}
+              </div>
+            </details>
+          )}
+          {results.allowlist.length > 0 && (
+            <details className="group" open={expanded}>
+              <summary className="flex items-center gap-2 cursor-pointer text-sm font-medium text-[var(--fg)]">
+                <span className="text-[12px] text-[var(--muted)]">✅ Allowlist ({results.allowlist.length})</span>
+              </summary>
+              <div className="mt-2 space-y-1 text-[12px]">
+                {results.allowlist.slice(0, 8).map((a, i) => (
+                  <div key={i} className="font-mono text-[var(--fg)]">
+                    {a.pattern} • {a.source}
+                  </div>
+                ))}
+                {results.allowlist.length > 8 && (
+                  <div className="text-[var(--muted)]">+{results.allowlist.length - 8} more</div>
+                )}
+              </div>
+            </details>
+          )}
+          {results.events.length === 0 && results.reputation.length === 0 && results.allowlist.length === 0 && (
+            <p className="text-[var(--muted)] text-sm">No matches</p>
+          )}
+        </div>
+      )}
+    </Shell>
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * Render map
  * ------------------------------------------------------------------ */
 
-const VIEWS: Record<Kind, (props?: { expanded?: boolean }) => ReactNode> = {
+const VIEWS: Record<Kind, (props?: { expanded?: boolean } | undefined) => ReactNode> = {
   topology: TopologyWidget,
   traffic: TrafficWidget,
   baseline: BaselineWidget,
@@ -775,6 +892,7 @@ const VIEWS: Record<Kind, (props?: { expanded?: boolean }) => ReactNode> = {
   events: EventsWidget,
   allowlist: AllowlistWidget,
   talkers: TopTalkersWidget,
+  query: QueryWidget,
 };
 
 const renderWidget = (item: SentinelWidget, expanded: boolean) => {
